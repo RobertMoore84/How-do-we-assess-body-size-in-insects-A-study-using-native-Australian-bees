@@ -1,0 +1,94 @@
+# Load required packages
+library(ape)        # Tools for phylogenetics and evolution
+library(phytools)   # Extended tools for phylogenetic analysis
+
+# ------------------------------------------------
+# STEP 1: Collapse data to species-level means
+# ------------------------------------------------
+cat("\nCollapsing to species-level means (trait dataset)...\n")
+
+# Define the trait variables of interest
+body_traits <- c(
+  "ITD",                # Intertegular distance
+  "Head_width",         # Width of head
+  "Eye_Length",         # Length of compound eye
+  "Eye_width",          # Width of compound eye
+  "Rear_Ocelli_size",   # Size of rear ocellus
+  "Front_Ocelli_Size",  # Size of front ocellus
+  "R_Wing_length"       # Length of right wing
+)
+
+# Aggregate raw measurements to species means
+# - Filter for species present in the pruned phylogeny
+# - Compute means per species across traits
+# - Convert species names into row labels
+species_means <- merged_data %>%
+  filter(species %in% pruned_tree$tip.label) %>%
+  group_by(species) %>%
+  summarise(across(all_of(body_traits), mean, na.rm = TRUE), .groups = "drop") %>%
+  tibble::column_to_rownames("species")
+
+cat("Species-level dataset ready with", nrow(species_means), "species and", ncol(species_means), "traits.\n")
+
+# Ensure tree tips match dataset
+# - Remove tree tips not present in species_means
+# - Reorder species_means to match tree tip order
+pruned_tree_sub <- drop.tip(pruned_tree, setdiff(pruned_tree$tip.label, rownames(species_means)))
+species_means   <- species_means[pruned_tree_sub$tip.label, ]
+
+# ------------------------------------------------
+# STEP 2: Estimate phylogenetic signal for traits
+# ------------------------------------------------
+cat("\nCalculating Blomberg’s K and Pagel’s λ for body traits...\n")
+
+# Prepare empty results table
+results <- data.frame(
+  Trait = character(),
+  BlombergK = numeric(),
+  K_Pval = numeric(),
+  PagelLambda = numeric(),
+  Lambda_Pval = numeric(),
+  stringsAsFactors = FALSE
+)
+
+# Loop through each trait and test for phylogenetic signal
+for (trait in colnames(species_means)) {
+  values <- species_means[[trait]]
+  names(values) <- rownames(species_means)   # Attach species names to values
+  
+  # Skip traits with insufficient data variation
+  if (all(is.na(values)) || length(unique(values)) < 3) next
+  
+  # Compute Blomberg’s K with significance test
+  Kres <- tryCatch(
+    phylosig(pruned_tree_sub, values, method = "K", test = TRUE),
+    error = function(e) NULL
+  )
+  
+  # Compute Pagel’s λ with significance test
+  Lres <- tryCatch(
+    phylosig(pruned_tree_sub, values, method = "lambda", test = TRUE),
+    error = function(e) NULL
+  )
+  
+  # Append results into results table
+  results <- rbind(results, data.frame(
+    Trait = trait,
+    BlombergK = if (!is.null(Kres)) Kres$K else NA,
+    K_Pval = if (!is.null(Kres)) Kres$P else NA,
+    PagelLambda = if (!is.null(Lres)) Lres$lambda else NA,
+    Lambda_Pval = if (!is.null(Lres)) Lres$P else NA
+  ))
+}
+
+cat("Phylogenetic signal calculations complete.\n")
+
+# Display results
+print(results)
+
+# ------------------------------------------------
+# STEP 3: Save output
+# ------------------------------------------------
+# Save results to a CSV file (replace with desired file path/name)
+write.csv(results, "OUTPUT_FILENAME.csv", row.names = FALSE)
+cat("Results saved to CSV file.\n")
