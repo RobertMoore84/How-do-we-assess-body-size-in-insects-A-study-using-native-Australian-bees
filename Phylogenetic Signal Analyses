@@ -1,0 +1,154 @@
+######################################################
+# PART 0: Setup
+######################################################
+library(dplyr)
+library(ggplot2)
+library(ape)
+library(phytools)
+library(vegan)
+library(tidyr)
+
+cat("✅ Libraries loaded.\n")
+
+######################################################
+# PART 1: Load data and clean species names
+######################################################
+merged_data <- read.csv("TRAIT_DATA.csv", header = TRUE, stringsAsFactors = FALSE)
+merged_data$species <- tolower(as.character(merged_data$species))
+
+# Map dataset names → tree names
+name_mapping <- c(
+  "asserta"        = "amegilla_asserta",
+  "bombiformis"    = "amegilla_bombiformis",
+  "bombylans"      = "xylocopa_bombylans",
+  "clarki"         = "leioproctus_platycephalus",
+  "concinna"       = "hyleoides_concinna",
+  "elegans"        = "hylaeus_elegans",
+  "ignescens"      = "megachile_aurifrons",
+  "lanarium"       = "lasioglossum_lanarium",
+  "maculariformis" = "megachile_cyanescens",
+  "pulchra"        = "amegilla_pulchra"
+)
+
+merged_data$species <- ifelse(
+  merged_data$species %in% names(name_mapping),
+  name_mapping[merged_data$species],
+  merged_data$species
+)
+
+######################################################
+# PART 2: Load and prune phylogenetic tree
+######################################################
+full_tree <- read.tree("FULL_TREE.nwk")
+selected_tree <- if (class(full_tree) == "multiPhylo") full_tree[[1]] else full_tree
+selected_tree$tip.label <- tolower(selected_tree$tip.label)
+
+species_to_keep <- unique(name_mapping)
+tips_to_drop <- setdiff(selected_tree$tip.label, species_to_keep)
+pruned_tree <- drop.tip(selected_tree, tips_to_drop)
+
+######################################################
+# PART 3: Phylogenetic signal analysis
+######################################################
+all_traits <- c("ITD", "Head_width", "Eye_Length", "Eye_width",
+                "Front_Ocelli_Size", "Rear_Ocelli_size", "R_Wing_length")
+
+phylo_signal_results <- list()
+
+for(tr in all_traits) {
+  trait_agg <- merged_data %>%
+    group_by(species) %>%
+    summarise(trait_mean = mean(.data[[tr]], na.rm = TRUE), .groups = "drop")
+  trait_agg <- trait_agg[match(pruned_tree$tip.label, trait_agg$species), ]
+  trait_vector <- trait_agg$trait_mean
+  names(trait_vector) <- trait_agg$species
+  if (all(is.na(trait_vector)) || length(unique(trait_vector)) < 3) next
+  
+  K_res <- phylosig(pruned_tree, trait_vector, method = "K", test = TRUE, nsim = 1000)
+  L_res <- phylosig(pruned_tree, trait_vector, method = "lambda", test = TRUE)
+  
+  phylo_signal_results[[tr]] <- data.frame(
+    trait = tr,
+    n_species = length(na.omit(trait_vector)),
+    Blomberg_K = round(K_res$K, 3),
+    Blomberg_p = round(K_res$P, 3),
+    Pagel_lambda = round(L_res$lambda, 3),
+    Lambda_p = round(L_res$P, 3)
+  )
+}
+
+phylo_signal_df <- bind_rows(phylo_signal_results)
+write.csv(phylo_signal_df, "OUTPUT_phylo_signal.csv", row.names = FALSE)
+
+######################################################
+# PART 4: Species-level slopes
+######################################################
+compute_slope_for_trait <- function(data, sp, tr) {
+  df_sp <- data %>% filter(species == sp, !is.na(.data[[tr]]))
+  if (length(unique(df_sp$year)) < 2) return(NULL)
+  if (any(df_sp[[tr]] <= 0, na.rm = TRUE)) return(NULL)
+  
+  mod <- lm(as.formula(paste("log(", tr, ") ~ year")), data = df_sp)
+  slope <- coef(mod)["year"]
+  se <- summary(mod)$coefficients["year", "Std. Error"]
+  tibble(
+    species = sp, trait = tr,
+    slope = slope,
+    slope_lower = slope - 1.96 * se,
+    slope_upper = slope + 1.96 * se,
+    pct_slope  = (exp(slope) - 1) * 100,
+    pct_lower  = (exp(slope - 1.96*se) - 1) * 100,
+    pct_upper  = (exp(slope + 1.96*se) - 1) * 100
+  )
+}
+
+slope_results <- map_dfr(unique(merged_data$species), function(sp) {
+  map_dfr(all_traits, function(tr) compute_slope_for_trait(merged_data, sp, tr))
+})
+
+slope_results <- slope_results %>%
+  mutate(sig_slope = (slope_lower > 0 & slope_upper > 0) | (slope_lower < 0 & slope_upper < 0))
+
+write.csv(slope_results, "OUTPUT_slopes.csv", row.names = FALSE)
+
+######################################################
+# PART 5: Forest plot (manuscript figure)
+######################################################
+# Mapping to clean display labels
+display_name_mapping <- c(
+  "amegilla_asserta"          = "Amegilla asserta",
+  "amegilla_bombiformis"      = "Amegilla bombiformis",
+  "xylocopa_bombylans"        = "Xylocopa bombylans",
+  "leioproctus_platycephalus" = "Leioproctus clarki",
+  "hyleoides_concinna"        = "Hyleoides concinna",
+  "hylaeus_elegans"           = "Hylaeus elegans",
+  "megachile_aurifrons"       = "Megachile ignescens",
+  "lasioglossum_lanarium"     = "Lasioglossum lanarium",
+  "megachile_cyanescens"      = "Megachile maculariformis",
+  "amegilla_pulchra"          = "Amegilla pulchra"
+)
+
+trait_display_mapping <- c(
+  "ITD"              = "Intertegular distance",
+  "Head_width"       = "Head width",
+  "Eye_Length"       = "Eye length",
+  "Eye_width"        = "Eye width",
+  "Front_Ocelli_Size"= "Front ocelli size",
+  "Rear_Ocelli_size" = "Rear ocelli size",
+  "R_Wing_length"    = "Right wing length"
+)
+
+forest_plot <- slope_results %>%
+  mutate(sig_label = ifelse(sig_slope, "Significant", "Non-significant"),
+         trait_display = trait_display_mapping[trait],
+         species = display_name_mapping[species]) %>%
+  ggplot(aes(x = pct_slope, y = species, color = sig_label)) +
+  geom_vline(xintercept = 0, linetype = "dashed", color = "grey40") +
+  geom_errorbarh(aes(xmin = pct_lower, xmax = pct_upper), height = 0.3) +
+  geom_point(size = 2.5) +
+  facet_wrap(~ trait_display, scales = "free_x", ncol = 4) +
+  scale_color_manual(values = c("Significant" = "firebrick", "Non-significant" = "steelblue")) +
+  theme_minimal(base_size = 14) +
+  labs(x = "Percent Change per Year", y = "Species")
+
+ggsave("OUTPUT_forest_plot.png", forest_plot, width = 14, height = 10, dpi = 600, bg = "white")
