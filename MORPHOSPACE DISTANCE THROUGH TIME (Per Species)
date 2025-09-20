@@ -1,0 +1,130 @@
+######################################################
+# MORPHOSPACE DISTANCE THROUGH TIME (Per Species)
+######################################################
+
+library(tidyverse)
+
+cat("\n🔍 Running PCA and calculating Euclidean distances...\n")
+
+# ----------------------------------------------------
+# 1. Select focal traits and compute species–decade means
+# ----------------------------------------------------
+traits <- merged_data %>%
+  dplyr::select(any_of(c(
+    "species", "decade",
+    "ITD", "Head_width", "Eye_Length", "Eye_width",
+    "Rear_Ocelli_size", "Front_Ocelli_Size", "R_Wing_length"
+  )))
+
+traits_means <- traits %>%
+  group_by(species, decade) %>%
+  summarise(across(where(is.numeric), mean, na.rm = TRUE), .groups = "drop")
+
+# ----------------------------------------------------
+# 2. PCA on species–decade means (7 traits)
+# ----------------------------------------------------
+pca_model <- prcomp(traits_means %>% dplyr::select(-species, -decade),
+                    scale. = TRUE)
+
+scores_time <- as.data.frame(pca_model$x[, 1:2]) %>%
+  mutate(
+    species = traits_means$species,
+    decade  = traits_means$decade
+  )
+
+# ----------------------------------------------------
+# 3. Map species codes to display names
+# ----------------------------------------------------
+name_map <- c(
+  "amegilla_asserta"        = "Amegilla asserta",
+  "amegilla_bombiformis"    = "Amegilla bombiformis",
+  "amegilla_pulchra"        = "Amegilla pulchra",
+  "hyleoides_concinna"      = "Hyleoides concinna",
+  "hylaeus_elegans"         = "Hylaeus elegans",
+  "lasioglossum_lanarium"   = "Lasioglossum lanarium",
+  "leioproctus_platycephalus" = "Leioproctus clarki",
+  "megachile_aurifrons"     = "Megachile ignescens",
+  "megachile_cyanescens"    = "Megachile maculariformis",
+  "xylocopa_bombylans"      = "Xylocopa bombylans"
+)
+
+scores_time <- scores_time %>%
+  mutate(species = dplyr::recode(species, !!!name_map)) %>%
+  arrange(species, decade)
+
+# ----------------------------------------------------
+# 4. Calculate Euclidean distances between successive decades
+# ----------------------------------------------------
+morpho_dists <- scores_time %>%
+  group_by(species) %>%
+  arrange(decade, .by_group = TRUE) %>%
+  mutate(
+    dist_to_prev = sqrt((PC1 - lag(PC1))^2 + (PC2 - lag(PC2))^2),
+    decade_from  = lag(decade),
+    decade_to    = decade
+  ) %>%
+  filter(!is.na(dist_to_prev)) %>%
+  ungroup()
+
+# ----------------------------------------------------
+# 5. Colorblind-friendly palette (Okabe–Ito)
+# ----------------------------------------------------
+okabe_ito <- c(
+  "#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2",
+  "#D55E00", "#CC79A7", "#999999", "#A6761D", "#E41A1C"
+)
+
+# ----------------------------------------------------
+# 6. Plot 1: Morphospace distance between decades
+# ----------------------------------------------------
+p_dist1 <- ggplot(morpho_dists,
+                  aes(x = factor(decade_to), y = dist_to_prev, fill = species)) +
+  geom_col(position = position_dodge(width = 0.9), width = 0.9) +
+  scale_fill_manual(values = okabe_ito) +
+  labs(
+    title = "Morphospace Distance Between Decades",
+    x = "Decade",
+    y = "Euclidean distance in PCA space"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(size = 14),
+    axis.text.y = element_text(size = 14),
+    axis.title  = element_text(size = 16),
+    legend.position = "bottom",
+    legend.text = element_text(face = "italic", size = 13)
+  )
+
+ggsave("OUTPUT_morphospace_distances.png", p_dist1,
+       width = 11, height = 7, dpi = 600, bg = "white")
+
+# ----------------------------------------------------
+# 7. Plot 2: Total displacement per species
+# ----------------------------------------------------
+species_totals <- morpho_dists %>%
+  group_by(species) %>%
+  summarise(total_distance = sum(dist_to_prev, na.rm = TRUE), .groups = "drop")
+
+p_dist2 <- ggplot(species_totals,
+                  aes(x = reorder(species, -total_distance),
+                      y = total_distance, fill = species)) +
+  geom_col(width = 0.8) +
+  scale_fill_manual(values = okabe_ito) +
+  labs(
+    title = "Total Morphospace Displacement (1900–2000)",
+    x = "Species",
+    y = "Cumulative Euclidean distance"
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(
+    panel.grid = element_blank(),
+    axis.text.x = element_text(angle = 45, hjust = 1,
+                               face = "italic", size = 12),
+    legend.position = "none"
+  )
+
+ggsave("OUTPUT_morphospace_totals.png", p_dist2,
+       width = 10, height = 7, dpi = 600, bg = "white")
+
+cat("✅ Morphospace distance plots saved.\n")
