@@ -1,0 +1,87 @@
+######################################################
+# PHYLOGENETIC PCA VISUALISATION
+# Species positions & trait loadings plots
+######################################################
+
+library(ggplot2)
+library(ggrepel)
+library(dplyr)
+
+cat("\n🔍 Plotting phylogenetic PCA results...\n")
+
+# ------------------------------------------------
+# 1. Extract eigenvalues & variance explained
+# ------------------------------------------------
+eigvals <- diag(ppca_res$Eval)
+var_exp <- (eigvals / sum(eigvals)) * 100
+
+# ------------------------------------------------
+# 2. Species scores (map names to clean labels)
+# ------------------------------------------------
+scores_df <- as.data.frame(ppca_res$S[, 1:2])
+scores_df$species <- rownames(ppca_res$S)
+
+name_map <- c(
+  "amegilla_asserta"          = "Amegilla asserta",
+  "amegilla_bombiformis"      = "Amegilla bombiformis",
+  "amegilla_pulchra"          = "Amegilla pulchra",
+  "hyleoides_concinna"        = "Hyleoides concinna",
+  "hylaeus_elegans"           = "Hylaeus elegans",
+  "lasioglossum_lanarium"     = "Lasioglossum lanarium",
+  "leioproctus_platycephalus" = "Leioproctus clarki",
+  "megachile_aurifrons"       = "Megachile ignescens",
+  "megachile_cyanescens"      = "Megachile maculariformis",
+  "xylocopa_bombylans"        = "Xylocopa bombylans"
+)
+
+scores_df$species <- recode(scores_df$species, !!!name_map)
+
+# ------------------------------------------------
+# 3. Trait loadings
+# ------------------------------------------------
+loadings_df <- as.data.frame(ppca_res$L[, 1:2])
+loadings_df$trait <- rownames(ppca_res$L)
+
+# ------------------------------------------------
+# 4. Plot: Species in pPCA morphospace
+# ------------------------------------------------
+species_plot <- ggplot(scores_df, aes(x = PC1, y = PC2)) +
+  geom_point(size = 3, color = "black") +
+  geom_text_repel(aes(label = species),
+                  size = 5, fontface = "italic",
+                  max.overlaps = Inf) +
+  labs(
+    title = "Species Positions in Phylogenetic Morphospace",
+    x = paste0("pPC1 (", round(var_exp[1], 2), "%)"),
+    y = paste0("pPC2 (", round(var_exp[2], 2), "%)")
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(panel.grid = element_blank())
+
+print(species_plot)
+ggsave("pPCA_species.png", species_plot,
+       width = 8, height = 6, dpi = 600, bg = "white")
+
+# ------------------------------------------------
+# 5. Plot: Trait loadings
+# ------------------------------------------------
+traits_plot <- ggplot(loadings_df, aes(x = PC1, y = PC2)) +
+  geom_segment(aes(x = 0, y = 0, xend = PC1*5, yend = PC2*5),
+               arrow = arrow(length = unit(0.25, "cm")),
+               color = "red", linewidth = 1) +
+  geom_text_repel(aes(x = PC1*5, y = PC2*5, label = trait),
+                  size = 5, color = "red", fontface = "bold",
+                  max.overlaps = Inf) +
+  labs(
+    title = "Trait Loadings on pPCA Axes",
+    x = paste0("pPC1 (", round(var_exp[1], 2), "%)"),
+    y = paste0("pPC2 (", round(var_exp[2], 2), "%)")
+  ) +
+  theme_minimal(base_size = 16) +
+  theme(panel.grid = element_blank())
+
+print(traits_plot)
+ggsave("pPCA_traits.png", traits_plot,
+       width = 8, height = 6, dpi = 600, bg = "white")
+
+cat("✅ pPCA species and trait plots saved.\n")
